@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from gemini_guide import generate_medicine_guide  # 김준우 모듈 (파일 이름이 다르면 여기를 수정)
+from ai_analyzer import generate_medicine_guide # 김준우 모듈 (파일 이름이 다르면 여기를 수정)
 
 KST = ZoneInfo("Asia/Seoul")
 DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "medicines.json"

@@ -1,0 +1,24 @@
+name: 약속 복용 알림
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # 30분마다 (UTC 기준)
+  workflow_dispatch:          # Actions 탭에서 수동 실행 (테스트용)
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 복용 알림 실행
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DUR_API_KEY: ${{ secrets.DUR_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TZ: Asia/Seoul
+        run: python src/main.py

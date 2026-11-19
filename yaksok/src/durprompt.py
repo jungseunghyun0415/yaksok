@@ -8,9 +8,10 @@ from google.genai import errors
 load_dotenv()  # .env의 키를 환경변수로 등록
 
 BASE_URL = "https://apis.data.go.kr/1471000/DURPrdlstInfoService03"
+EASY_DRUG_URL = "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService"
 
 
-# ───────────── DUR API ─────────────
+# ───────────── DUR API (병용금기) ─────────────
 def _call(operation: str, **params) -> list[dict]:
     """DUR API를 호출해 item 리스트를 반환합니다. (키가 에러 메시지에 노출되지 않게 처리)"""
     key = os.environ.get("DATA_GO_KR_KEY")
@@ -19,12 +20,19 @@ def _call(operation: str, **params) -> list[dict]:
 
     query = {"serviceKey": key, "type": "json", "pageNo": 1, "numOfRows": 50, **params}
 
-    try:
-        res = requests.get(f"{BASE_URL}/{operation}", params=query, timeout=10)
-        res.raise_for_status()
-    except requests.RequestException as e:
-        # 원본 예외에는 키가 포함된 URL이 들어있어서 from None으로 숨김
-        raise RuntimeError(f"DUR API 호출 실패: {type(e).__name__}") from None
+    last_err = None
+    for attempt in range(3):  # 최대 3번 시도
+        try:
+            res = requests.get(f"{BASE_URL}/{operation}", params=query, timeout=30)
+            res.raise_for_status()
+            break
+        except requests.RequestException as e:
+            last_err = type(e).__name__
+            if attempt < 2:
+                print(f"DUR API 응답 지연({last_err}), 재시도합니다... ({attempt + 1}/2)")
+                time.sleep(3)
+    else:
+        raise RuntimeError(f"DUR API 호출 실패: {last_err}") from None
 
     try:
         data = res.json()
@@ -33,16 +41,15 @@ def _call(operation: str, **params) -> list[dict]:
             "DUR API 응답이 JSON이 아닙니다. 인증키(Decoding)와 활용신청 승인 상태를 확인하세요."
         ) from None
 
-    # [3번] API 자체 오류 코드 확인 (HTTP 200인데 오류인 경우 대비)
     header = data.get("header") or {}
     code = header.get("resultCode")
     if code and code not in ("00", "03"):  # 00 정상, 03 데이터 없음
         raise RuntimeError(f"DUR API 오류 코드 {code}: {header.get('resultMsg')}")
 
     items = (data.get("body") or {}).get("items") or []
-    if isinstance(items, dict):  # {"item": [...]} 형태로 오는 경우 대비
+    if isinstance(items, dict):
         items = items.get("item", [])
-    if isinstance(items, dict):  # 결과가 1건이면 dict로 오는 경우 대비
+    if isinstance(items, dict):
         items = [items]
     return items
 
@@ -51,7 +58,6 @@ def get_usjnt_taboo_text(item_name: str, max_items: int = 10) -> str:
     """품목명으로 병용금기 정보를 조회해 프롬프트에 넣을 텍스트로 변환합니다."""
     items = _call("getUsjntTabooInfoList03", itemName=item_name)
 
-    # [2번] 결과 없음 문구: "안전하다"로 오해되지 않도록 명확히 표기
     if not items:
         return (
             "DUR 병용금기 데이터가 조회되지 않았음 "
@@ -62,15 +68,67 @@ def get_usjnt_taboo_text(item_name: str, max_items: int = 10) -> str:
     for it in items:
         mixture = it.get("MIXTURE_INGR_KOR_NAME")
         reason = it.get("PROHBT_CONTENT")
-        if (mixture, reason) in seen:  # 중복 제거
+        if (mixture, reason) in seen:
             continue
         seen.add((mixture, reason))
         lines.append(
             f"- {it.get('INGR_KOR_NAME')}과(와) {mixture}은(는) 함께 복용 금지: {reason}"
         )
-        if len(lines) >= max_items:  # 프롬프트가 너무 길어지지 않게 제한
+        if len(lines) >= max_items:
             break
     return "\n".join(lines)
+
+
+# ───────────── e약은요 API (효능·용법) ─────────────
+def get_drug_info_text(item_name: str) -> str | None:
+    """e약은요 API에서 약의 효능·용법·주의사항을 조회해 텍스트로 만듭니다. 없으면 None."""
+    key = os.environ.get("DATA_GO_KR_KEY")
+    if not key:
+        raise ValueError("DATA_GO_KR_KEY 환경변수가 설정되지 않았습니다.")
+
+    query = {
+        "serviceKey": key, "type": "json",
+        "pageNo": 1, "numOfRows": 3, "itemName": item_name,
+    }
+
+    last_err = None
+    for attempt in range(3):
+        try:
+            res = requests.get(
+                f"{EASY_DRUG_URL}/getDrbEasyDrugList", params=query, timeout=30
+            )
+            res.raise_for_status()
+            break
+        except requests.RequestException as e:
+            last_err = type(e).__name__
+            if attempt < 2:
+                print(f"약 정보 API 응답 지연({last_err}), 재시도합니다... ({attempt + 1}/2)")
+                time.sleep(3)
+    else:
+        raise RuntimeError(f"약 정보 API 호출 실패: {last_err}") from None
+
+    try:
+        data = res.json()
+    except ValueError:
+        raise RuntimeError("약 정보 API 응답이 JSON이 아닙니다. 인증키를 확인하세요.") from None
+
+    items = (data.get("body") or {}).get("items") or []
+    if not items:
+        return None  # 조회 결과 없음
+
+    it = items[0]  # 첫 번째 결과 사용
+    parts = []
+    if it.get("efcyQesitm"):        # 효능
+        parts.append(f"- 효능·효과: {it['efcyQesitm']}")
+    if it.get("useMethodQesitm"):   # 사용법
+        parts.append(f"- 사용법: {it['useMethodQesitm']}")
+    if it.get("atpnQesitm"):        # 주의사항
+        parts.append(f"- 주의사항: {it['atpnQesitm']}")
+    if it.get("intrcQesitm"):       # 상호작용
+        parts.append(f"- 상호작용: {it['intrcQesitm']}")
+    if it.get("seQesitm"):          # 부작용
+        parts.append(f"- 부작용: {it['seQesitm']}")
+    return "\n".join(parts) if parts else None
 
 
 # ───────────── Gemini ─────────────
@@ -106,38 +164,40 @@ def generate_medicine_guide(
 6. 병용 주의 데이터가 없거나 조회되지 않았더라도 "안전하다"고 단정하지 말고, 약사나 의사에게 확인하도록 안내할 것.
 """
 
-    model = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+    model = "gemini-3.5-flash-lite"
 
-    # [1번] 서버 혼잡(5xx) 시 자동 재시도
-    for attempt in range(4):  # 최대 4번 시도
+    for attempt in range(4):  # 서버 혼잡 시 최대 4번 시도
         try:
             response = client.models.generate_content(model=model, contents=prompt)
             return response.text
-        except errors.ServerError:  # 일시적인 서버 오류만 재시도
+        except errors.ServerError:  # 5xx 일시 오류만 재시도
             if attempt == 3:
                 raise
-            wait = 2 ** attempt * 3  # 3초, 6초, 12초 대기
-            print(f"서버가 혼잡합니다. {wait}초 후 재시도합니다... ({attempt + 1}/3)")
+            wait = 2 ** attempt * 3  # 3, 6, 12초 대기
+            print(f"Gemini 서버가 혼잡합니다. {wait}초 후 재시도합니다... ({attempt + 1}/3)")
             time.sleep(wait)
 
 
 # ───────────── 실행 ─────────────
 if __name__ == "__main__":
-    product_name = "타이레놀정500밀리그램"  # DUR은 성분명이 아니라 품목명으로 조회
+    product_name = input("약 이름(제품명)을 입력하세요: ").strip()
 
-    sample_info = (
-        "- 유효성분: 아세트아미노펜 500mg\n"
-        "- 효능·효과: 감기로 인한 발열 및 통증, 두통, 신경통, 근육통, 월경통, 염좌통, 치통, 관절통\n"
-        "- 용법·용량: 만 12세 이상 소아 및 성인 1회 1정에서 2정씩, 1일 3회에서 4회 (4시간에서 6시간마다) 필요시 복용. "
-        "1일 최대 4그램(8정)을 초과하여 복용하지 말 것."
-    )
+    if not product_name:
+        print("약 이름을 입력하지 않았습니다. 프로그램을 종료합니다.")
+        raise SystemExit
 
-    usage_notice = (
-        "- 매일 세 잔 이상 정기적으로 술을 마시는 사람이 이 약이나 다른 해열진통제를 복용해야 할 경우 반드시 의사 또는 약사와 상의해야 함 (간손상 유발 가능).\n"
-        "- 아세트아미노펜을 포함하는 다른 제품과 함께 복용하지 말 것 (일일 최대용량 4,000mg 초과 시 간손상 위험)."
-    )
+    print(f"\n'{product_name}' 정보를 조회 중입니다...\n")
 
+    # 효능·용법을 e약은요 API에서 조회
+    drug_info = get_drug_info_text(product_name)
+    if not drug_info:
+        drug_info = (
+            "해당 약의 기본 정보가 조회되지 않았습니다. "
+            "약 이름(제품명)을 정확히 입력했는지 확인하세요."
+        )
+
+    # DUR 병용금기 조회
     dur_text = get_usjnt_taboo_text(product_name)
-    dur_warning = f"[DUR 병용금기]\n{dur_text}\n\n[사용상 주의사항]\n{usage_notice}"
+    dur_warning = f"[DUR 병용금기]\n{dur_text}"
 
-    print(generate_medicine_guide(product_name, sample_info, dur_warning))
+    print(generate_medicine_guide(product_name, drug_info, dur_warning))

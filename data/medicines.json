@@ -4,6 +4,11 @@
       "name": "예시 영양제",
       "times": ["09:00", "21:00"],
       "cycle": "daily"
+    },
+    {
+      "name": "Discord 테스트 알림",
+      "times": ["00:55"],
+      "cycle": "daily"
     }
   ]
 }

@@ -16,7 +16,15 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 레포 맨 위의 notification 폴더를 찾기 위해
 
-from durprompt import generate_medicine_guide  # noqa: E402  김준우 모듈
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "yaksok" / "src"))  # 박채민의 durprompt.py 위치
+
+try:  # 박채민 durprompt(DUR 연동 프롬프트)를 우선 쓰고, 불러올 수 없으면 김준우 ai_analyzer로 대신한다
+    import durprompt  # noqa: E402
+    from durprompt import generate_medicine_guide  # noqa: E402
+except Exception as _e:  # noqa: BLE001  (python-dotenv 미설치 등)
+    print(f"durprompt를 불러오지 못해 ai_analyzer를 사용합니다: {type(_e).__name__}: {_e}")
+    durprompt = None
+    from ai_analyzer import generate_medicine_guide  # noqa: E402
 from drug_db import lookup_info  # noqa: E402  약 데이터(CSV)에서 제품명·제조사·주성분 찾기
 from notification.discord_notify import send_reminder  # noqa: E402  로즈 모듈
 from notification.email_notify import send_email  # noqa: E402
@@ -56,9 +64,18 @@ def is_due(med: dict, now: datetime) -> bool:
 def get_dur_warning(med: dict) -> str:
     """병용 주의 데이터를 돌려준다.
 
-    TODO(박채민): data/dur_combination_clean.csv 조회로 교체 (등록된 약들끼리 병용금기 조합 확인).
+    일정에 적어 둔 dur_warning이 있으면 그것을 쓰고, 없으면 공공데이터 DUR API(durprompt)로 조회한다.
+    DATA_GO_KR_KEY가 없거나 조회에 실패하면 "조회된 데이터 없음" 문구를 돌려준다.
+    TODO(박채민): data/dur_combination_clean.csv로 등록된 약들끼리의 병용금기 조합 확인.
     """
-    return med.get("dur_warning") or NO_DUR
+    if med.get("dur_warning"):
+        return med["dur_warning"]
+    if durprompt and os.environ.get("DATA_GO_KR_KEY"):
+        try:
+            return f"[DUR 병용금기]\n{durprompt.get_usjnt_taboo_text(med['name'])}"
+        except Exception as e:  # noqa: BLE001
+            print(f"DUR 조회 실패 ({med.get('name')}): {type(e).__name__}")
+    return NO_DUR
 
 
 # ---------------------------------------------------------------- 알림 채널

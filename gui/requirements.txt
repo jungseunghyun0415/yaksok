@@ -1,0 +1,7 @@
+customtkinter
+google-genai
+requests
+tzdata
+pillow
+# 카메라로 찍기를 쓰려면 아래 줄의 # 를 지우고 설치하세요
+# opencv-python

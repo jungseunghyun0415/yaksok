@@ -2,23 +2,42 @@ name: 약속 복용 알림
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # 30분마다 (UTC 기준)
-  workflow_dispatch:          # Actions 탭에서 수동 실행 (테스트용)
+    - cron: "*/30 * * * *"   # 30분마다 (UTC 기준, 실제로는 몇 분 지연될 수 있음)
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "테스트 모드 (시간 무시하고 등록된 약 전부 발송)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yaksok-notify
+  cancel-in-progress: false
 
 jobs:
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt
-      - name: 복용 알림 실행
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 알림 실행
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DUR_API_KEY: ${{ secrets.DUR_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          TZ: Asia/Seoul
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          TEST_MODE: ${{ github.event.inputs.test_mode }}
         run: python src/main.py

@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 레포 맨 위의 notification 폴더를 찾기 위해
 
-from ai_analyzer import generate_medicine_guide  # noqa: E402  김준우 모듈
+from durprompt import generate_medicine_guide  # noqa: E402  김준우 모듈
 from drug_db import lookup_info  # noqa: E402  약 데이터(CSV)에서 제품명·제조사·주성분 찾기
 from notification.discord_notify import send_reminder  # noqa: E402  로즈 모듈
 from notification.email_notify import send_email  # noqa: E402
